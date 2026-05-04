@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rg-olx-export-teak"
+version = "0.1.0"
+description = "v2 Library OLX exporter for Open edX teak (openedx-learning 0.26). Emits ADR-0006 §D1 zip layout consumable by openedx-core's LearningPackageUnzipper."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "AGPL-3.0-or-later"}
+authors = [{name = "Oleksii Koval", email = "alex.v.koval@gmail.com"}]
+classifiers = [
+    "Framework :: Django",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "Django>=4.2",
+    "lxml",
+    "tomli-w",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-django",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rg_olx_export_teak = ["py.typed"]
