@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     "Django>=4.2",
     "lxml",
-    "tomli-w",
+    "tomlkit",
 ]
 
 [project.optional-dependencies]
