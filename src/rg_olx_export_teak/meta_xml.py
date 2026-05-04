@@ -1,22 +1,19 @@
-"""Inject ADR-0006 §D1 ``<meta>`` blocks into ``<problem>`` OLX.
+"""Inject ``<meta>`` blocks into ``<problem>`` OLX.
 
 Pure XML transformation, **no database access**. The caller supplies a
 ``tag_groups`` dict (taxonomy export_id → list of tag values); this module
 turns it into the standard ``<meta><tag taxonomy="X">VALUE</tag></meta>``
 shape and inserts it as the first child of a ``<problem>`` root.
 
-Why this separation: the same emit logic is needed in two places —
+This separation lets the same emit logic be shared by:
 
-1. `openedx-core` plugin (``feat/meta-tag-export`` branch's
-   ``TaggingLearningPackageZipper``) — queries `openedx_tagging.models`
-   (flat path).
-2. This package's ``rg_olx_export_teak.exporter`` — queries
-   `openedx_tagging.core.tagging.models` (deep path used by edx-platform
-   release/teak).
+- this package's exporter (deep-path ``openedx_tagging.core.tagging.*``,
+  used by edx-platform release/teak);
+- a sibling openedx-core-side plugin where openedx-core IS installed
+  (flat-path ``openedx_tagging.*``).
 
 The DB query path differs per consumer; the XML output is a single source
-of truth. Both consumers call ``inject_meta_block(olx, groups)`` with the
-groups they assembled from their respective ORM views.
+of truth. See ``docs/FORMAT.md`` for the emitted shape.
 """
 from __future__ import annotations
 

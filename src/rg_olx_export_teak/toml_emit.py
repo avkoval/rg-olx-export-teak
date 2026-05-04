@@ -1,4 +1,4 @@
-"""TOML emitters for the ADR-0006 §D1 archive format.
+"""TOML emitters for the openedx-core archive format.
 
 Three TOML kinds, all written verbatim into the zip by the exporter:
 
@@ -7,12 +7,14 @@ Three TOML kinds, all written verbatim into the zip by the exporter:
 - ``collections/<slug>.toml`` — one per ``Collection``
 
 The output matches openedx-core 0.45's fixture
-(``tests/openedx_content/applets/backup_restore/fixtures/library_backup/``)
-byte-for-byte at the structural level so its ``LearningPackageUnzipper``
-can ingest our zips. Field naming on disk uses ``key`` everywhere
-(``LearningPackage``, ``PublishableEntity``, ``Collection``) — this is a
-deliberate format-format-stability decision in upstream that hides the
-0.26 → 0.45 Python rename.
+(``tests/openedx_content/applets/backup_restore/fixtures/library_backup/``
+in the upstream openedx-core repo) byte-for-byte at the structural level
+so its ``LearningPackageUnzipper`` can ingest our zips. Field naming on
+disk uses ``key`` everywhere (``LearningPackage``, ``PublishableEntity``,
+``Collection``) — a deliberate stability decision in upstream that hides
+the 0.26 → 0.45 Python field rename.
+
+See ``docs/FORMAT.md`` for the full spec.
 
 These functions are pure: in records → out string. No Django, no DB.
 """

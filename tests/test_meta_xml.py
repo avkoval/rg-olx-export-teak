@@ -1,6 +1,6 @@
 """Unit tests for ``inject_meta_block`` (pure XML transform).
 
-Covers ADR-0006 §D1's expected emit shape:
+Covers the expected emit shape (see ``docs/FORMAT.md``):
 
 - ``<meta>`` first child of ``<problem>``;
 - one ``<tag taxonomy="X">VALUE</tag>`` per (taxonomy, value);

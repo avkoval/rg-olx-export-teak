@@ -1,31 +1,116 @@
 # rg-olx-export-teak
 
-v2 Library OLX exporter for Open edX **teak** (openedx-learning 0.26 era).
+OLX zip exporter for v2 Libraries on **Open edX teak / ulmo**
+(`openedx-learning==0.26.x` through `0.30.x`).
 
-## What this does
+A small Django app pip-installed into a Tutor LMS/CMS image. Provides
+one management command:
 
-Walks a v2 `LearningPackage` in an Open edX Tutor instance running the **teak** named release (or any deployment that pins `openedx-learning==0.26.x`) and emits a zip in the [ADR-0006 §D1](../Sud-ispyt/ok-Sud-Ispyt-shared/adr/0006-olx-bundle-import-format-and-reimport-strategy.md) layout. The zip is consumed by KSK-KI's `bundle_import.py` (which delegates to `openedx_content.applets.backup_restore.zipper.LearningPackageUnzipper` from openedx-core 0.45+).
+```sh
+./manage.py export_lp <learning-package-key> <output-zip-path> \
+    [--user <username>] \
+    [--origin-server <hostname>]
+```
 
-`<problem>` blocks get a `<meta><tag taxonomy="X">VALUE</tag></meta>` block injected ahead of their response element, populated from `openedx_tagging.core.tagging.models.ObjectTag` rows attached to the `PublishableEntity`.
+The zip is byte-compatible with `openedx_content.applets.backup_restore.zipper.LearningPackageUnzipper`
+from upstream **openedx-core 0.45+**, so any importer/consumer running
+openedx-core can ingest what Studio authored. For tagged `<problem>`
+components, taxonomy classifications travel inside `block.xml` as
+`<meta><tag taxonomy="X">VALUE</tag></meta>` blocks (populated from
+`openedx_tagging.core.tagging.models.ObjectTag`).
 
 ## Why this exists
 
-Stock Open edX teak has no v2 Library export at all. openedx-core 0.45 (which has the `LearningPackageZipper`) cannot be installed into a teak Tutor stack because edx-platform itself imports `openedx_learning.api.*` at 48 sites — see `~/dev/rg/ki/edx-as-cms/architecture-flow1-flow2.org` for the full compatibility analysis.
+Stock teak/ulmo has no v2 Library export at all — no management
+command, no REST endpoint, no Studio UI button. openedx-core 0.45+
+(which has `LearningPackageZipper`) cannot be installed into a teak
+Tutor stack: edx-platform itself imports `openedx_learning.api.*` at
+~48 sites, and the rename / namespace collisions break the runtime.
 
-This package is the **bridge** until edx-platform integrates openedx-core in a future named release. At that point this package becomes legacy and is replaced by the `feat/meta-tag-export` plugin in [openedx-core](https://github.com/avkoval/openedx-core).
+This package is the bridge — it walks 0.26's ORM directly and writes
+the openedx-core-shaped archive. See [`docs/RATIONALE.md`](docs/RATIONALE.md)
+for the full design rationale and lifecycle.
 
-## Status
+## Format
 
-Early scaffold. See `~/dev/rg/ki/edx-as-cms/architecture-flow1-flow2.org` § "Final recommendation after both spikes" for the implementation plan and milestones.
+See [`docs/FORMAT.md`](docs/FORMAT.md) for the zip layout spec. In short:
+
+```
+package.toml
+entities/
+  <slug>.toml                                # containers
+  xblock.v1/<type>/<slug>.toml               # components
+  xblock.v1/<type>/<slug>/component_versions/v<N>/block.xml
+  xblock.v1/<type>/<slug>/component_versions/v<N>/static/<asset>
+collections/<slug>.toml
+```
 
 ## Install
 
-This package is intended to be pip-installed into a Tutor `openedx` image via `OPENEDX_EXTRA_PIP_REQUIREMENTS` in a Tutor plugin. See `tutor-plugins/` in the consuming `edx-as-cms` repo (sibling) for the wiring.
+This package is intended to be pip-installed into a Tutor `openedx`
+image via a small Tutor plugin. Sketch (drop into your
+`$TUTOR_PLUGINS_ROOT`):
+
+```python
+from tutor import hooks
+
+DOCKERFILE_PATCH = """
+RUN pip install "git+https://github.com/avkoval/rg-olx-export-teak.git@main#egg=rg-olx-export-teak"
+"""
+
+INSTALLED_APP_PATCH = '''
+if "rg_olx_export_teak" not in INSTALLED_APPS:
+    INSTALLED_APPS.append("rg_olx_export_teak")
+'''
+
+hooks.Filters.ENV_PATCHES.add_items([
+    ("openedx-dockerfile-post-python-requirements", DOCKERFILE_PATCH),
+    ("openedx-lms-common-settings", INSTALLED_APP_PATCH),
+    ("openedx-cms-common-settings", INSTALLED_APP_PATCH),
+])
+```
+
+Then:
+
+```sh
+tutor plugins enable <your-plugin-name>
+tutor config save
+tutor images build openedx-dev
+tutor dev start --detach lms cms
+tutor dev exec cms ./manage.py cms help export_lp
+```
 
 ## Develop
 
-```bash
+```sh
 python -m venv .venv
 .venv/bin/pip install -e ".[test]"
 .venv/bin/pytest tests/
 ```
+
+40 unit tests cover the format-emit path (TOML serializers,
+`<meta>` XML injection, slug allocator, tag-row grouping). The full
+walker is integration-tested only inside a real Tutor LMS/CMS
+container — it imports `openedx_learning.apps.authoring.*` model
+classes that are only available there.
+
+## Compatibility
+
+| Component | Required version |
+|---|---|
+| Open edX | teak (Tutor 20.x) / ulmo (Tutor 21.x) |
+| `openedx-learning` | 0.26.x – 0.30.x |
+| `openedx-tagging` (deep path: `openedx_tagging.core.tagging.*`) | shipped with edx-platform release/teak and release/ulmo |
+| Python | 3.11 (Tutor's bundled interpreter) — also tested on 3.12 |
+| Django | 4.2 (whatever edx-platform pins) |
+
+## Lifecycle
+
+Bridge package — decommission once edx-platform integrates openedx-core
+(a future named release). At that point the openedx-core-side plugin
+takes over; see [`docs/RATIONALE.md`](docs/RATIONALE.md) §
+"Lifecycle".
+
+## Licence
+
+AGPL-3.0-or-later.

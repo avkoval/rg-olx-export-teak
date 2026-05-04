@@ -2,12 +2,12 @@
 
 The acceptance bar is "openedx-core 0.45's ``LearningPackageUnzipper``
 parses our output the same way it parses its own fixture." We don't run
-the unzipper here (that's the integration test in a later phase) — we
-just round-trip-parse with ``tomlkit`` and assert structural shape.
+the unzipper here (that's the integration test against a real consumer
+running openedx-core) — we just round-trip-parse with ``tomlkit`` and
+assert structural shape.
 
-The reference fixture used as a sanity benchmark:
-``tests/openedx_content/applets/backup_restore/fixtures/library_backup/``
-in the openedx-core repo.
+Reference fixture (upstream):
+``openedx-core/tests/openedx_content/applets/backup_restore/fixtures/library_backup/``.
 """
 from __future__ import annotations
 
