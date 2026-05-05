@@ -47,38 +47,24 @@ collections/<slug>.toml
 
 ## Install
 
-This package is intended to be pip-installed into a Tutor `openedx`
-image via a small Tutor plugin. Sketch (drop into your
-`$TUTOR_PLUGINS_ROOT`):
-
-```python
-from tutor import hooks
-
-DOCKERFILE_PATCH = """
-RUN pip install "git+https://github.com/avkoval/rg-olx-export-teak.git@main#egg=rg-olx-export-teak"
-"""
-
-INSTALLED_APP_PATCH = '''
-if "rg_olx_export_teak" not in INSTALLED_APPS:
-    INSTALLED_APPS.append("rg_olx_export_teak")
-'''
-
-hooks.Filters.ENV_PATCHES.add_items([
-    ("openedx-dockerfile-post-python-requirements", DOCKERFILE_PATCH),
-    ("openedx-lms-common-settings", INSTALLED_APP_PATCH),
-    ("openedx-cms-common-settings", INSTALLED_APP_PATCH),
-])
-```
-
-Then:
+A copy-paste-ready Tutor plugin ships with this repo at
+[`contrib/tutor-plugin/lp_export.py`](contrib/tutor-plugin/lp_export.py).
+Drop it into your `$TUTOR_PLUGINS_ROOT/` directory:
 
 ```sh
-tutor plugins enable <your-plugin-name>
+cp contrib/tutor-plugin/lp_export.py "$TUTOR_PLUGINS_ROOT/"
+tutor plugins enable lp_export
 tutor config save
 tutor images build openedx-dev
 tutor dev start --detach lms cms
 tutor dev exec cms ./manage.py cms help export_lp
 ```
+
+The plugin pip-installs this package from `git+https://github.com/avkoval/rg-olx-export-teak.git@main`
+into the openedx image's Python environment and adds `rg_olx_export_teak`
+to both LMS and CMS `INSTALLED_APPS`. To pin a specific commit, edit the
+`OPENEDX_CORE_GIT_REF`-style constants at the top of the plugin file
+before enabling.
 
 ## Develop
 
