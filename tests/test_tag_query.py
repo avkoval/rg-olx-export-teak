@@ -1,14 +1,17 @@
-"""Tests for ``extract_tag_groups`` (pure helper).
+"""Tests for the pure helpers in ``tag_query``.
 
-The live ``tag_groups_for_entity`` is exercised in the end-to-end test
-against the Tutor LMS DB; here we only test the row-grouping logic with
-duck-typed mock rows.
+The live ``tag_groups_for_object_id`` is exercised in the end-to-end
+test against the Tutor LMS DB; here we test the row-grouping logic
+with duck-typed mock rows, and the UsageKey builder.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rg_olx_export_teak.tag_query import extract_tag_groups
+from rg_olx_export_teak.tag_query import (
+    component_usage_key,
+    extract_tag_groups,
+)
 
 
 @dataclass
@@ -89,3 +92,42 @@ def test_first_seen_order_preserved_within_taxonomy() -> None:
         _row("discipline", "m"),
     ]
     assert extract_tag_groups(rows) == {"discipline": ["z", "a", "m"]}
+
+
+# --- component_usage_key --------------------------------------------------
+
+
+def test_usage_key_v2_library() -> None:
+    # Standard case: LP key starts with "lib:".
+    assert component_usage_key("lib:KSK:tsst-export", "problem", "abc-123") == \
+        "lb:KSK:tsst-export:problem:abc-123"
+
+
+def test_usage_key_uuid_local_key() -> None:
+    # local_key may be a UUID (Studio's default for v2 Libraries).
+    assert (
+        component_usage_key(
+            "lib:KSK:tsst-export",
+            "problem",
+            "5f7f3ca0-4e94-4fa3-8394-4683deeb991f",
+        )
+        == "lb:KSK:tsst-export:problem:5f7f3ca0-4e94-4fa3-8394-4683deeb991f"
+    )
+
+
+def test_usage_key_html_block_type() -> None:
+    assert component_usage_key("lib:WGU:LIB_C001", "html", "intro") == \
+        "lb:WGU:LIB_C001:html:intro"
+
+
+def test_usage_key_no_lib_prefix_kept_verbatim() -> None:
+    # Defensive: non-v2-Library LP key passes through without mangling.
+    assert component_usage_key("custom:org:slug", "problem", "x") == \
+        "lb:custom:org:slug:problem:x"
+
+
+def test_usage_key_only_lib_stripped() -> None:
+    # Only the literal "lib:" prefix is removed — substrings inside the
+    # name are preserved.
+    assert component_usage_key("lib:libsomething:slug", "problem", "x") == \
+        "lb:libsomething:slug:problem:x"

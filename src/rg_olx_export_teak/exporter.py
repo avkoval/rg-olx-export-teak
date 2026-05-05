@@ -43,7 +43,7 @@ from .records import (
     ExportContext,
     LearningPackageRecord,
 )
-from .tag_query import tag_groups_for_entity
+from .tag_query import component_usage_key, tag_groups_for_object_id
 from .toml_emit import emit_collection_toml, emit_entity_toml, emit_package_toml
 
 log = logging.getLogger(__name__)
@@ -114,7 +114,7 @@ def export_learning_package(
 
         for entity in entities:
             if hasattr(entity, "component"):
-                _emit_component(zipf, entity, allocator, lp.updated, result)
+                _emit_component(zipf, entity, allocator, lp.updated, result, lp.key)
             elif hasattr(entity, "container"):
                 _emit_container(zipf, entity, allocator, lp.updated, result)
             else:
@@ -148,6 +148,7 @@ def _emit_component(
     allocator: FilenameAllocator,
     fallback_ts: Any,
     result: ExportResult,
+    learning_package_key: str,
 ) -> None:
     component = entity.component
     component_type = component.component_type
@@ -196,8 +197,13 @@ def _emit_component(
                 continue
 
             if is_problem and path_in_version == BLOCK_XML_KEY:
-                # Inject <meta> from the deep-path ObjectTag store.
-                groups = tag_groups_for_entity(entity.uuid)
+                # edx-platform's content_tagging keys ObjectTag rows by
+                # the v2 Library UsageKey (lb:<org>:<slug>:<type>:<local_key>),
+                # not by PublishableEntity.uuid. See tag_query.component_usage_key.
+                usage_key = component_usage_key(
+                    learning_package_key, type_name, component.local_key,
+                )
+                groups = tag_groups_for_object_id(usage_key)
                 if groups:
                     text = payload if isinstance(payload, str) else payload.decode("utf-8")
                     payload = inject_meta_block(text, groups)
