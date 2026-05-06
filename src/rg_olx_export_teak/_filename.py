@@ -50,3 +50,15 @@ def _slug(key: str) -> str:
 def _hashed_slug(key: str) -> str:
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:_HASH_LEN]
     return f"{_slug(key)}-{digest}"
+
+
+def safe_zip_filename(lp_key: str) -> str:
+    """Map an LP key (``lib:KSK:test-export``) to a download filename.
+
+    Replaces the colons (browsers/proxies sometimes strip these, Windows
+    file systems disallow them) and any path separators with underscores.
+    Unicode is preserved — we want the filename recognisable as derived
+    from the original key, not slugified.
+    """
+    safe = lp_key.replace(":", "_").replace("/", "_").replace("\\", "_")
+    return f"{safe}.zip"

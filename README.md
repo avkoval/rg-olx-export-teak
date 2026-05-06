@@ -3,8 +3,21 @@
 OLX zip exporter for v2 Libraries on **Open edX teak / ulmo**
 (`openedx-learning==0.26.x` through `0.30.x`).
 
-A small Django app pip-installed into a Tutor LMS/CMS image. Provides
-one management command:
+A small Django app pip-installed into a Tutor LMS/CMS image. Two
+entry points:
+
+**1. Django admin action** (recommended for non-developers):
+
+Visit `/admin/oel_publishing/learningpackage/`, select exactly one
+LearningPackage, choose **"Export as OLX zip"** from the actions
+dropdown, click *Go*. The zip downloads in the browser with a
+filename derived from the LP key (e.g. `lib_KSK_test-export.zip`).
+Two custom HTTP headers report the export stats: `X-RG-OLX-Components`
+and `X-RG-OLX-Problems-With-Meta`.
+
+Requires `is_staff=True` on the user account.
+
+**2. Management command** (for automation / shell use):
 
 ```sh
 ./manage.py export_lp <learning-package-key> <output-zip-path> \
