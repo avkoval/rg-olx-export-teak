@@ -26,7 +26,10 @@ from django.http import HttpResponse
 from openedx_learning.apps.authoring.publishing.models import LearningPackage
 
 from ._filename import safe_zip_filename
-from .exporter import export_learning_package
+from .exporter import (
+    export_learning_package,
+    ExportValidationError,
+)
 from .records import ExportContext
 
 log = logging.getLogger(__name__)
@@ -63,6 +66,21 @@ def export_as_olx_zip(modeladmin, request, queryset):
     try:
         try:
             result = export_learning_package(lp.id, zip_path, context=context)
+        except ExportValidationError as exc:
+            head = (
+                f"Cannot export {lp.key} — "
+                f"{len(exc.invalid)} problem(s) failed producer-side validation:"
+            )
+            details = " | ".join(f"{key}: {reason}" for key, reason in exc.invalid[:5])
+            if len(exc.invalid) > 5:
+                details += f" (… and {len(exc.invalid) - 5} more)"
+            modeladmin.message_user(
+                request,
+                f"{head} {details}. "
+                f"Fix in Studio (publish a version with a *response element) and retry.",
+                level=messages.ERROR,
+            )
+            return None
         except Exception as exc:  # noqa: BLE001 — surface in admin, log details
             log.exception("Admin export of LP id=%s failed", lp.id)
             modeladmin.message_user(

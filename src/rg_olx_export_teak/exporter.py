@@ -35,6 +35,7 @@ from openedx_learning.apps.authoring.publishing.models import (
 )
 
 from ._filename import FilenameAllocator
+from ._validate import validate_problem_olx
 from .meta_xml import inject_meta_block
 from .records import (
     CollectionRecord,
@@ -67,6 +68,22 @@ class ExportResult:
     num_problems_with_meta: int = 0
     num_static_files: int = 0
     skipped_entities: list[str] = field(default_factory=list)
+    invalid_problems: list[tuple[str, str]] = field(default_factory=list)
+
+
+class ExportValidationError(Exception):
+    """One or more ``<problem>`` components failed producer-side validation.
+
+    Carries the list of ``(entity_key, reason)`` pairs that failed so the
+    caller can render a complete list rather than failing on the first.
+    """
+
+    def __init__(self, invalid: list[tuple[str, str]]) -> None:
+        self.invalid = invalid
+        lines = "\n".join(f"  - {key}: {reason}" for key, reason in invalid)
+        super().__init__(
+            f"{len(invalid)} component(s) failed validation:\n{lines}"
+        )
 
 
 def export_learning_package(
@@ -74,8 +91,18 @@ def export_learning_package(
     output_path: str | Path,
     *,
     context: ExportContext,
+    allow_invalid: bool = False,
 ) -> ExportResult:
-    """Walk LP and write a zip at ``output_path``. Returns a summary."""
+    """Walk LP and write a zip at ``output_path``. Returns a summary.
+
+    If ``allow_invalid`` is False (the default) and any ``<problem>``
+    component fails ``validate_problem_olx``, raise ``ExportValidationError``
+    *before* writing the zip — no partial archive lands on disk.
+
+    If ``allow_invalid`` is True, invalid problems are skipped (their
+    entity TOML and version files are not written) and recorded in
+    ``ExportResult.invalid_problems``.
+    """
     lp = LearningPackage.objects.get(id=learning_package_id)
     output_path = Path(output_path)
 
@@ -98,22 +125,43 @@ def export_learning_package(
         learning_package_id, lp.key, output_path,
     )
 
+    entities = list(
+        PublishableEntity.objects
+        .filter(learning_package_id=learning_package_id)
+        .select_related(
+            "component",
+            "component__component_type",
+            "container",
+        )
+        .order_by("key")
+    )
+
+    # Pre-validation pass: refuse (or selectively skip) malformed problems
+    # before any bytes are written to disk. This keeps a partial / corrupt
+    # zip from landing on the host on a strict run.
+    invalid = _collect_invalid_problems(entities)
+    if invalid and not allow_invalid:
+        log.error(
+            "Refusing to export LP %s — %d problem(s) failed validation",
+            lp.key, len(invalid),
+        )
+        raise ExportValidationError(invalid)
+
+    result.invalid_problems = list(invalid)
+    invalid_keys = {key for key, _ in invalid}
+    if invalid_keys:
+        log.warning(
+            "Skipping %d invalid problem(s) under allow_invalid=True: %s",
+            len(invalid_keys), sorted(invalid_keys),
+        )
+
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
         _write_text(zipf, "package.toml", emit_package_toml(lp_record, context), lp.updated)
 
-        entities = (
-            PublishableEntity.objects
-            .filter(learning_package_id=learning_package_id)
-            .select_related(
-                "component",
-                "component__component_type",
-                "container",
-            )
-            .order_by("key")
-        )
-
         for entity in entities:
             if hasattr(entity, "component"):
+                if entity.key in invalid_keys:
+                    continue  # already counted in result.invalid_problems
                 _emit_component(zipf, entity, allocator, lp.updated, result, lp.key)
             elif hasattr(entity, "container"):
                 _emit_container(zipf, entity, allocator, lp.updated, result)
@@ -132,11 +180,54 @@ def export_learning_package(
             _emit_collection(zipf, collection, allocator, result)
 
     log.info(
-        "Done. components=%s containers=%s collections=%s problems_with_meta=%s static_files=%s",
+        "Done. components=%s containers=%s collections=%s problems_with_meta=%s static_files=%s invalid_skipped=%s",
         result.num_components, result.num_containers, result.num_collections,
-        result.num_problems_with_meta, result.num_static_files,
+        result.num_problems_with_meta, result.num_static_files, len(result.invalid_problems),
     )
     return result
+
+
+def _collect_invalid_problems(entities) -> list[tuple[str, str]]:
+    """Return ``[(entity_key, reason), ...]`` for problems that fail validation.
+
+    Validates only the *published* version's ``block.xml`` — that's what
+    consumers will surface to learners. Drafts may legitimately be
+    incomplete and are not validated here. Components without a published
+    version are skipped (the consumer importer skips them too).
+    """
+    invalid: list[tuple[str, str]] = []
+    for entity in entities:
+        if not hasattr(entity, "component"):
+            continue
+        component = entity.component
+        ctype = component.component_type
+        if ctype.namespace != XBLOCK_NAMESPACE or ctype.name != PROBLEM_TYPE_NAME:
+            continue
+
+        published = component.versioning.published
+        if published is None:
+            continue
+
+        olx_text: str | None = None
+        for cvc in published.componentversioncontent_set.select_related("content").all():
+            if cvc.key != BLOCK_XML_KEY:
+                continue
+            payload = _read_content_payload(cvc.content)
+            if payload is None:
+                olx_text = None
+                break
+            olx_text = payload if isinstance(payload, str) else payload.decode("utf-8")
+            break
+
+        if olx_text is None:
+            invalid.append((entity.key, "no block.xml payload in published version"))
+            continue
+
+        reason = validate_problem_olx(olx_text)
+        if reason is not None:
+            invalid.append((entity.key, reason))
+
+    return invalid
 
 
 # --- per-entity emitters ------------------------------------------------------
