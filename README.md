@@ -1,10 +1,10 @@
 # rg-olx-export-teak
 
-OLX zip exporter for v2 Libraries on **Open edX teak / ulmo**
+OLX zip **exporter and importer** for v2 Libraries on **Open edX teak / ulmo**
 (`openedx-learning==0.26.x` through `0.30.x`).
 
-A small Django app pip-installed into a Tutor LMS/CMS image. Two
-entry points:
+A small Django app pip-installed into a Tutor LMS/CMS image. Three
+entry points for export, one for import:
 
 **1. Django admin action** (recommended for non-developers):
 
@@ -17,20 +17,39 @@ and `X-RG-OLX-Problems-With-Meta`.
 
 Requires `is_staff=True` on the user account.
 
-**2. Management command** (for automation / shell use):
+**2. Export management command** (for automation / shell use):
 
 ```sh
 ./manage.py export_lp <learning-package-key> <output-zip-path> \
     [--user <username>] \
-    [--origin-server <hostname>]
+    [--origin-server <hostname>] \
+    [--allow-invalid]
 ```
 
-The zip is byte-compatible with `openedx_content.applets.backup_restore.zipper.LearningPackageUnzipper`
+**3. Import management command** (round-trip testing, restoring backups,
+ingesting bundles produced by openedx-core 0.45+'s `LearningPackageZipper`):
+
+```sh
+./manage.py import_lp <zip-path-inside-container> \
+    [--library-key <override-key>] \
+    [--no-publish]
+```
+
+Idempotent: re-running the same zip is safe — same LP key reuses the
+LP row, same component `local_key` reuses the component, new versions
+are appended only when content differs. See the docstring of
+`importer.py` for the full behaviour and v0 limitations (containers
+and tag re-creation are deferred).
+
+The export zip is byte-compatible with `openedx_content.applets.backup_restore.zipper.LearningPackageUnzipper`
 from upstream **openedx-core 0.45+**, so any importer/consumer running
 openedx-core can ingest what Studio authored. For tagged `<problem>`
 components, taxonomy classifications travel inside `block.xml` as
 `<meta><tag taxonomy="X">VALUE</tag></meta>` blocks (populated from
-`openedx_tagging.core.tagging.models.ObjectTag`).
+`openedx_tagging.core.tagging.models.ObjectTag`). The import side
+strips these blocks before storage so Studio renders the question
+cleanly; recreating the matching `ObjectTag` rows is left to a
+follow-up release.
 
 ## Why this exists
 
@@ -71,13 +90,16 @@ tutor config save
 tutor images build openedx-dev
 tutor dev start --detach lms cms
 tutor dev exec cms ./manage.py cms help export_lp
+tutor dev exec cms ./manage.py cms help import_lp
 ```
 
-The plugin pip-installs this package from `git+https://github.com/avkoval/rg-olx-export-teak.git@main`
-into the openedx image's Python environment and adds `rg_olx_export_teak`
-to both LMS and CMS `INSTALLED_APPS`. To pin a specific commit, edit the
-`OPENEDX_CORE_GIT_REF`-style constants at the top of the plugin file
-before enabling.
+The plugin pip-installs this package from
+`git+https://github.com/avkoval/rg-olx-export-teak.git@main` into the openedx
+image's Python environment and adds `rg_olx_export_teak` to both LMS and CMS
+`INSTALLED_APPS`. Both `export_lp` and `import_lp` management commands become
+available in the LMS and CMS containers. Pin a specific tag (e.g.
+`@v0.4.0`) by editing the `RG_OLX_EXPORT_TEAK_GIT_REF` constant in the plugin
+file before enabling.
 
 ## Develop
 
@@ -87,11 +109,12 @@ python -m venv .venv
 .venv/bin/pytest tests/
 ```
 
-40 unit tests cover the format-emit path (TOML serializers,
-`<meta>` XML injection, slug allocator, tag-row grouping). The full
-walker is integration-tested only inside a real Tutor LMS/CMS
-container — it imports `openedx_learning.apps.authoring.*` model
-classes that are only available there.
+77 unit tests cover the pure-Python paths: TOML emit/parse round-trip,
+`<meta>` XML injection, slug allocator, tag-row grouping, OLX problem
+validation. The Django ORM walker (export) and the openedx-learning
+authoring writer (import) are integration-tested only inside a real
+Tutor LMS/CMS container — they import `openedx_learning.apps.authoring.*`
+model classes that are only available there.
 
 ## Compatibility
 
