@@ -288,11 +288,15 @@ def _ensure_component(
     except PublishableEntity.DoesNotExist:
         pass
 
+    # learning_package_id is positional-only in openedx-learning 0.26's
+    # authoring_api.create_component signature; created_by has no default
+    # in 0.26 either (it does in 0.45+). Pass both explicitly.
     component = authoring_api.create_component(
-        learning_package_id=lp.id,
+        lp.id,
         component_type=component_type,
         local_key=slug,
         created=record.created,
+        created_by=None,
     )
     return component, True
 
@@ -315,21 +319,23 @@ def _write_version(
         path_in_version = path_in_zip[len(version_dir):]
         payload = zf.read(path_in_zip)
 
+        # 0.26's text/file content factories take a MediaType *id*, not a mime
+        # string — get_or_create_media_type resolves the row first. Both API
+        # methods take learning_package_id and media_type_id positional-only.
         mime_type = _guess_mime(path_in_version, type_name)
+        media_type = authoring_api.get_or_create_media_type(mime_type)
 
         if path_in_version == BLOCK_XML_KEY:
             text = payload.decode("utf-8")
             text = META_BLOCK_RE.sub("", text, count=1)
-            content, _ = authoring_api.get_or_create_text_content(
-                learning_package_id=component.learning_package_id,
-                mime_type=mime_type,
+            content = authoring_api.get_or_create_text_content(
+                component.learning_package_id, media_type.id,
                 text=text,
                 created=now,
             )
         else:
-            content, _ = authoring_api.get_or_create_file_content(
-                learning_package_id=component.learning_package_id,
-                mime_type=mime_type,
+            content = authoring_api.get_or_create_file_content(
+                component.learning_package_id, media_type.id,
                 data=payload,
                 created=now,
             )
@@ -337,8 +343,9 @@ def _write_version(
 
         content_to_replace[path_in_version] = content.pk
 
+    # component_pk is positional-only in 0.26.
     authoring_api.create_next_component_version(
-        component_pk=component.pk,
+        component.pk,
         title=title or component.local_key,
         content_to_replace=content_to_replace,
         created=now,
@@ -365,23 +372,34 @@ def _import_one_collection(
             collection.save(update_fields=["description"])
         result.num_collections_updated += 1
     except Collection.DoesNotExist:
+        # 0.26's create_collection requires created_by as a keyword argument
+        # (no default); 0.45+ defaults it to None. Pass None explicitly.
         collection = authoring_api.create_collection(
-            learning_package_id=lp.id,
-            key=record.key,
+            lp.id,
+            record.key,
             title=record.title,
             description=record.description,
+            created_by=None,
         )
         result.num_collections_created += 1
 
-    # Reset membership to the zip's manifest. Entity keys missing from the LP
-    # are silently skipped — they may belong to a sibling LP or have been
-    # filtered out (e.g. invalid problems with --allow-invalid in export).
-    entities = list(
-        PublishableEntity.objects.filter(
-            learning_package_id=lp.id, key__in=record.entity_keys,
-        )
+    # Add entities to the collection via the API (rather than the .entities
+    # manager) so the through-table audit columns (created_by, modified) get
+    # populated correctly. Entity keys missing from the LP are silently
+    # skipped — they may belong to a sibling LP or have been filtered out
+    # (e.g. invalid problems with --allow-invalid in export).
+    #
+    # Note: we only add. Removal of stale entities (entity in collection but
+    # not in this manifest) is deferred — it's an "append-only friendly"
+    # default that matches teak's overall posture and avoids silently
+    # detaching content that exam tickets may already reference.
+    entities_qs = PublishableEntity.objects.filter(
+        learning_package_id=lp.id, key__in=record.entity_keys,
     )
-    collection.entities.set(entities)
+    if entities_qs.exists():
+        authoring_api.add_to_collection(
+            lp.id, record.key, entities_qs, created_by=None,
+        )
 
 
 # --- path / mime helpers ------------------------------------------------------
