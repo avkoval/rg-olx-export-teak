@@ -28,10 +28,13 @@ What this command does NOT do (yet)
   v2 Libraries — our primary use case — don't use containers; courses do.
   Re-creating containers needs the openedx_learning container API which
   has churn between 0.26 and 0.45.
-- *Tag re-creation*. ``<meta>`` blocks emitted by the exporter are stripped
-  from ``block.xml`` on import (otherwise Studio renders them literally).
-  Re-creating ``ObjectTag`` rows requires a Taxonomy lookup chain that
-  differs between teak and ulmo; do that in a follow-up.
+- *(v0.4.2)* *Tag re-creation* now happens by default: ``<meta>`` blocks
+  are parsed before being stripped from ``block.xml``, then converted to
+  ``ObjectTag`` rows on the consumer side via ``openedx_tagging``. This
+  closes the round-trip — teak Studio sees the same tags that the source
+  side authored. Pass ``apply_tags=False`` (or ``--no-apply-tags`` on the
+  CLI) to skip if the consumer doesn't want this (e.g. running outside
+  teak Studio without the v2-Library UsageKey convention).
 - *Static assets / media files*. Stored as ``ComponentVersionContent`` rows
   but Studio's serving path for v2 Library static assets is still in flux
   in teak. Round-trip (export → import → re-export) preserves bytes; live
@@ -90,8 +93,18 @@ ENTITIES_PREFIX = "entities/"
 COLLECTIONS_PREFIX = "collections/"
 
 # Strip the export-injected <meta>...</meta> block from problem block.xml
-# before storing. We don't recreate ObjectTags here; that's a follow-up.
+# before storing — the renderer must not see <meta> as visible text.
 META_BLOCK_RE = re.compile(r"<meta>.*?</meta>\s*", flags=re.DOTALL)
+# Extract individual <tag taxonomy="X">VALUE</tag> entries from a <meta> body.
+META_TAG_RE = re.compile(
+    r'<tag\s+taxonomy="([^"]+)"\s*>([^<]*)</tag>',
+    flags=re.DOTALL,
+)
+# v2-Library UsageKey shape: lb:<org>:<library_slug>:<block_type>:<local_key>.
+# This is the object_id under which teak's content_tagging stores ObjectTag
+# rows for v2-Library components — NOT the PublishableEntity uuid. Without
+# this exact form, Studio's tag drawer can't find the tags we apply.
+LIB_KEY_PREFIX = "lib:"
 
 
 @dataclass
@@ -106,8 +119,11 @@ class ImportResult:
     num_static_files: int = 0
     num_collections_created: int = 0
     num_collections_updated: int = 0
+    num_tags_applied: int = 0
+    num_taxonomies_created: int = 0
     skipped_containers: list[str] = field(default_factory=list)
     skipped_entities: list[tuple[str, str]] = field(default_factory=list)
+    tag_apply_warnings: list[str] = field(default_factory=list)
 
 
 class ImportFormatError(Exception):
@@ -119,6 +135,7 @@ def import_learning_package(
     *,
     override_lp_key: str | None = None,
     publish: bool = True,
+    apply_tags: bool = True,
 ) -> ImportResult:
     """Read ``zip_path`` and write its contents into the local DB.
 
@@ -130,6 +147,14 @@ def import_learning_package(
     in a single ``publish_all_drafts`` call at the end. If False, versions
     land as drafts only — useful for previewing in Studio without exposing
     them to the LMS.
+
+    ``apply_tags``: if True (default), parse ``<meta>`` blocks from each
+    component's block.xml, get-or-create the corresponding ``Taxonomy`` and
+    ``Tag`` rows, and link them to the component as ``ObjectTag``. Requires
+    the LP key to follow the ``lib:<org>:<slug>`` convention so v2-Library
+    UsageKeys can be derived. If False, ``<meta>`` is still stripped from
+    block.xml (so the renderer doesn't surface it) but no tag-side rows are
+    written. ``openedx_tagging`` not being installed silently disables this.
     """
     with zipfile.ZipFile(zip_path, "r") as zf:
         names = set(zf.namelist())
@@ -155,7 +180,7 @@ def import_learning_package(
         entity_tomls = sorted(n for n in names if _is_entity_toml(n))
         for name in entity_tomls:
             try:
-                _import_one_entity(zf, name, lp, result)
+                _import_one_entity(zf, name, lp, result, apply_tags=apply_tags)
             except Exception as exc:  # noqa: BLE001 — we want a report, not a crash
                 log.warning("Failed to import %s: %s", name, exc)
                 result.skipped_entities.append((name, str(exc)))
@@ -172,11 +197,12 @@ def import_learning_package(
         )
 
     log.info(
-        "Done. components=+%s/~%s versions=%s collections=+%s/~%s static=%s skipped=%s",
+        "Done. components=+%s/~%s versions=%s collections=+%s/~%s static=%s tags=%s skipped=%s",
         result.num_components_created, result.num_components_updated,
         result.num_versions_written,
         result.num_collections_created, result.num_collections_updated,
-        result.num_static_files, len(result.skipped_entities),
+        result.num_static_files, result.num_tags_applied,
+        len(result.skipped_entities),
     )
     return result
 
@@ -214,6 +240,8 @@ def _import_one_entity(
     toml_name: str,
     lp: LearningPackage,
     result: ImportResult,
+    *,
+    apply_tags: bool = True,
 ) -> None:
     """Read one ``entities/<ns>/<type>/<slug>.toml`` and write all its versions."""
     text = zf.read(toml_name).decode("utf-8")
@@ -225,6 +253,24 @@ def _import_one_entity(
         result.skipped_containers.append(record.key)
         log.info("Skipping container %s (containers not yet supported)", record.key)
         return
+
+    # Capture <meta> tags from the latest available version's block.xml *before*
+    # we strip them in _write_version. We re-apply them as ObjectTag rows after
+    # versioning is done. Take the highest version_num present in the zip so a
+    # re-import bumps tags from the freshest payload.
+    meta_tags: list[tuple[str, str]] = []
+    for v in sorted(record.versions, key=lambda v: v.version_num):
+        block_xml_path = (
+            f"entities/{namespace}/{type_name}/{slug}/component_versions/"
+            f"v{v.version_num}/{BLOCK_XML_KEY}"
+        )
+        try:
+            text = zf.read(block_xml_path).decode("utf-8")
+        except KeyError:
+            continue
+        extracted = _extract_meta_tags(text)
+        if extracted:
+            meta_tags = extracted
 
     component, was_created = _ensure_component(
         lp=lp,
@@ -258,6 +304,9 @@ def _import_one_entity(
             type_name=type_name,
             result=result,
         )
+
+    if apply_tags and meta_tags:
+        _apply_meta_tags(component, lp.key, type_name, slug, meta_tags, result)
 
 
 def _ensure_component(
@@ -351,6 +400,99 @@ def _write_version(
         created=now,
     )
     result.num_versions_written += 1
+
+
+def _extract_meta_tags(block_xml: str) -> list[tuple[str, str]]:
+    """Pull (taxonomy_export_id, tag_value) pairs from a problem's <meta> block.
+
+    Returns ``[]`` if there is no <meta> block, the block is empty, or the
+    document doesn't parse as XML. We use a tolerant regex rather than full
+    XML parsing because the surrounding <problem> may carry response-type
+    elements that are valid OLX but not strict XML in edge cases (e.g.
+    unclosed self-closing tags from older edX exporters).
+    """
+    block = META_BLOCK_RE.search(block_xml)
+    if block is None:
+        return []
+    inner = block.group(0)
+    return [(ex_id, value) for ex_id, value in META_TAG_RE.findall(inner)]
+
+
+def _apply_meta_tags(
+    component: Any,
+    lp_key: str,
+    type_name: str,
+    slug: str,
+    meta_tags: list[tuple[str, str]],
+    result: ImportResult,
+) -> None:
+    """Re-create ObjectTag rows from a component's captured <meta> entries.
+
+    Builds the v2-Library UsageKey (``lb:<org>:<slug>:<type>:<local_key>``)
+    and calls ``openedx_tagging.api.tag_object`` once per taxonomy. Each
+    taxonomy and tag value is get-or-created so re-imports converge to the
+    state in the bundle.
+
+    Failures are logged and accumulated on ``result.tag_apply_warnings``,
+    not raised — a tagging glitch must not abort an otherwise-successful
+    import. ``openedx_tagging`` not being importable means we silently skip
+    (the package is teak-internal; consumer environments without it can
+    still use this importer for content-only round-trips).
+    """
+    if not lp_key.startswith(LIB_KEY_PREFIX):
+        result.tag_apply_warnings.append(
+            f"{component.local_key}: LP key {lp_key!r} is not in lib:<org>:<slug> "
+            f"shape; cannot derive UsageKey, skipping {len(meta_tags)} tag(s)."
+        )
+        return
+
+    try:
+        from openedx_tagging.core.tagging import api as tag_api
+    except ImportError:
+        log.info(
+            "openedx_tagging not installed; skipping ObjectTag re-creation for %s",
+            component.local_key,
+        )
+        return
+
+    library_part = lp_key[len(LIB_KEY_PREFIX):]  # "KSK:demo_law"
+    usage_key = f"lb:{library_part}:{type_name}:{slug}"
+
+    by_taxonomy: dict[str, list[str]] = {}
+    for ex_id, value in meta_tags:
+        if not ex_id or not value:
+            continue
+        by_taxonomy.setdefault(ex_id, []).append(value)
+
+    for ex_id, values in by_taxonomy.items():
+        try:
+            taxonomy = tag_api.get_taxonomy_by_export_id(ex_id)
+            if taxonomy is None:
+                taxonomy = tag_api.create_taxonomy(
+                    name=ex_id,
+                    enabled=True,
+                    export_id=ex_id,
+                )
+                result.num_taxonomies_created += 1
+
+            # add_tag_to_taxonomy is idempotent on duplicate value; pre-creating
+            # tags makes them "valid" so tag_object doesn't need create_invalid.
+            for value in set(values):
+                try:
+                    tag_api.add_tag_to_taxonomy(taxonomy, value)
+                except Exception:  # noqa: BLE001 — duplicate / shape errors
+                    pass
+
+            tag_api.tag_object(usage_key, taxonomy, list(set(values)))
+            result.num_tags_applied += len(set(values))
+        except Exception as exc:  # noqa: BLE001 — log + continue
+            log.warning(
+                "Failed to apply taxonomy=%s tags=%s on %s: %s",
+                ex_id, values, usage_key, exc,
+            )
+            result.tag_apply_warnings.append(
+                f"{usage_key}: taxonomy={ex_id} values={values}: {exc}"
+            )
 
 
 def _import_one_collection(

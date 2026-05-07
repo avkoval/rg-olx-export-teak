@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rg-olx-export-teak"
-version = "0.4.1"
+version = "0.4.2"
 description = "v2 Library OLX exporter and importer for Open edX teak (openedx-learning 0.26). Round-trips the openedx-core archive zip layout (compatible with openedx-core 0.45+'s LearningPackageUnzipper)."
 readme = "README.md"
 requires-python = ">=3.11"

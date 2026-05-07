@@ -64,11 +64,25 @@ class Command(BaseCommand):
                 "publish_all_drafts. Default: publish."
             ),
         )
+        parser.add_argument(
+            "--no-apply-tags",
+            dest="apply_tags",
+            action="store_false",
+            default=True,
+            help=(
+                "Skip ObjectTag re-creation from <meta> blocks. Tags are "
+                "still stripped from block.xml so the renderer doesn't "
+                "show them as text — this only suppresses the openedx_tagging "
+                "side-effect. Use when the consumer doesn't follow the v2-"
+                "Library UsageKey convention or has no openedx_tagging."
+            ),
+        )
 
     def handle(self, *args, **options):
         zip_path: str = options["zip_path"]
         library_key: str | None = options.get("library_key")
         publish: bool = options.get("publish", True)
+        apply_tags: bool = options.get("apply_tags", True)
 
         if not os.path.isfile(zip_path):
             raise CommandError(f"No such file: {zip_path}")
@@ -78,6 +92,7 @@ class Command(BaseCommand):
                 zip_path=zip_path,
                 override_lp_key=library_key,
                 publish=publish,
+                apply_tags=apply_tags,
             )
         except ImportFormatError as exc:
             raise CommandError(f"Bad archive: {exc}") from exc
@@ -93,6 +108,14 @@ class Command(BaseCommand):
         self.stdout.write(f"  static files          : {result.num_static_files}")
         self.stdout.write(f"  collections created   : {result.num_collections_created}")
         self.stdout.write(f"  collections updated   : {result.num_collections_updated}")
+        self.stdout.write(f"  tags applied          : {result.num_tags_applied}")
+        self.stdout.write(f"  taxonomies created    : {result.num_taxonomies_created}")
+        if result.tag_apply_warnings:
+            self.stdout.write(self.style.WARNING(
+                f"  tag apply warnings    : {len(result.tag_apply_warnings)}"
+            ))
+            for w in result.tag_apply_warnings[:5]:
+                self.stdout.write(self.style.WARNING(f"    - {w}"))
 
         if result.skipped_containers:
             self.stdout.write(self.style.WARNING(
