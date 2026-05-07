@@ -3,43 +3,92 @@
 OLX zip **exporter and importer** for v2 Libraries on **Open edX teak / ulmo**
 (`openedx-learning==0.26.x` through `0.30.x`).
 
-A small Django app pip-installed into a Tutor LMS/CMS image. Three
-entry points for export, one for import:
+A small Django app pip-installed into a Tutor LMS/CMS image. Two ways
+to export (Studio admin or shell), one way to import (shell).
 
-**1. Django admin action** (recommended for non-developers):
+## Use
 
-Visit `/admin/oel_publishing/learningpackage/`, select exactly one
-LearningPackage, choose **"Export as OLX zip"** from the actions
-dropdown, click *Go*. The zip downloads in the browser with a
-filename derived from the LP key (e.g. `lib_KSK_test-export.zip`).
-Two custom HTTP headers report the export stats: `X-RG-OLX-Components`
-and `X-RG-OLX-Problems-With-Meta`.
+### Export from the Studio admin
 
-Requires `is_staff=True` on the user account.
+For non-developers — no shell needed:
 
-**2. Export management command** (for automation / shell use):
+1. Open Studio admin (assumes Tutor `studio.local.openedx.io:8001` here;
+   substitute your CMS host):
+
+   ```
+   http://studio.local.openedx.io:8001/admin/oel_publishing/learningpackage/
+   ```
+
+   The same page also exists on the LMS admin (`local.openedx.io:8000/admin/...`)
+   if your authoring user only has LMS-staff rights.
+
+2. Tick exactly one LearningPackage row (libraries appear here as their
+   underlying LP — name matches what Studio shows under *Content → Libraries*).
+
+3. From the **Action** dropdown choose **"Export as OLX zip
+   (rg-olx-export-teak)"**, click *Go*.
+
+4. The browser downloads a zip whose filename is derived from the LP key
+   (e.g. `lib_KSK_test-export.zip`). Two custom HTTP response headers
+   report export stats: `X-RG-OLX-Components` and `X-RG-OLX-Problems-With-Meta`.
+
+Requires `is_staff=True` on the user account. There is currently *no*
+admin action for import — use the management command below.
+
+### Export from the management command
+
+For automation, scripted round-trips, or when you want the zip on the
+container filesystem rather than downloaded to your laptop:
 
 ```sh
-./manage.py export_lp <learning-package-key> <output-zip-path> \
+tutor dev exec cms ./manage.py cms export_lp \
+    <learning-package-key> <output-zip-path-inside-container> \
     [--user <username>] \
     [--origin-server <hostname>] \
     [--allow-invalid]
 ```
 
-**3. Import management command** (round-trip testing, restoring backups,
-ingesting bundles produced by openedx-core 0.45+'s `LearningPackageZipper`):
+`--allow-invalid` skips `<problem>` components that fail producer-side
+validation (no `*response` child, malformed XML) instead of refusing the
+whole export.
+
+### Import from the management command
+
+Round-trip testing, restoring backups, and ingesting bundles produced by
+openedx-core 0.45+'s `LearningPackageZipper`:
 
 ```sh
-./manage.py import_lp <zip-path-inside-container> \
+tutor dev exec cms ./manage.py cms import_lp \
+    <zip-path-inside-container> \
     [--library-key <override-key>] \
     [--no-publish]
 ```
 
 Idempotent: re-running the same zip is safe — same LP key reuses the
 LP row, same component `local_key` reuses the component, new versions
-are appended only when content differs. See the docstring of
-`importer.py` for the full behaviour and v0 limitations (containers
-and tag re-creation are deferred).
+are appended only when content differs. After import, run
+`./manage.py cms reindex_studio --experimental --incremental` so
+Meilisearch picks up the new content and the v2 Library tagging UI works.
+
+See the docstring of `importer.py` for the full behaviour and v0
+limitations (containers and tag re-creation are deferred).
+
+### Round-trip in one shot
+
+To prove a zip travels intact through this package, on a fresh LP:
+
+```sh
+tutor dev exec cms ./manage.py cms export_lp lib:Demo:roundtrip /tmp/a.zip
+tutor dev exec cms ./manage.py cms import_lp /tmp/a.zip --library-key lib:Demo:roundtrip-copy
+tutor dev exec cms ./manage.py cms export_lp lib:Demo:roundtrip-copy /tmp/b.zip
+diff <(unzip -l /tmp/a.zip | sort) <(unzip -l /tmp/b.zip | sort)
+```
+
+Identical file lists indicates a stable round-trip; payload checksums
+should match too on stable input. (Tag re-creation is the known gap —
+see limitation note above.)
+
+## Format
 
 The export zip is byte-compatible with `openedx_content.applets.backup_restore.zipper.LearningPackageUnzipper`
 from upstream **openedx-core 0.45+**, so any importer/consumer running
@@ -63,7 +112,7 @@ This package is the bridge — it walks 0.26's ORM directly and writes
 the openedx-core-shaped archive. See [`docs/RATIONALE.md`](docs/RATIONALE.md)
 for the full design rationale and lifecycle.
 
-## Format
+## Format reference
 
 See [`docs/FORMAT.md`](docs/FORMAT.md) for the zip layout spec. In short:
 
